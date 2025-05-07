@@ -243,9 +243,35 @@ class Gemma2TensorProcessor(TensorProcessor):
         return GGUFTensor(weights, name, {})
 
 
+class Qwen3MoeTensorProcessor(TensorProcessor):
+    def __init__(self, config=None):
+        super().__init__(config=config)
+
+    def process(self, weights, name, **kwargs):
+        if "_exp" in name:
+            tensor_key_mapping = kwargs.get("tensor_key_mapping")
+            parsed_parameters = kwargs.get("parsed_parameters")
+            if tensor_key_mapping:
+                self._split_moe_expert_tensor(weights, parsed_parameters, name, tensor_key_mapping)
+                return GGUFTensor(weights, None, {})
+        if "ffn_gate_inp_shexp" in name:
+            weights = np.expand_dims(weights, axis=0)
+        return GGUFTensor(weights, name, {})
+
+    def _split_moe_expert_tensor(
+        self, weights: np.ndarray, parsed_parameters: dict[str, dict], name: str, tensor_key_mapping: dict
+    ):
+        name = tensor_key_mapping[name]
+        w_counter = self.config.get("num_experts", 8)  # Qwen3Moe typically uses 8 experts by default
+        for i in range(0, w_counter):
+            temp_name = name.replace("mlp.experts.", f"mlp.experts.{i}.")
+            exp_weight = weights[i]
+            parsed_parameters["tensors"][temp_name] = torch.from_numpy(np.copy(exp_weight))
+
 TENSOR_PROCESSORS = {
     "llama": LlamaTensorProcessor,
     "qwen2moe": Qwen2MoeTensorProcessor,
+    "qwen3moe": Qwen3MoeTensorProcessor,
     "bloom": BloomTensorProcessor,
     "t5": T5TensorProcessor,
     "t5encoder": T5TensorProcessor,
@@ -295,6 +321,8 @@ def get_gguf_hf_weights_map(
         model_type = "command-r"
     elif model_type == "qwen2_moe":
         model_type = "qwen2moe"
+    elif model_type == "qwen3_moe":
+        model_type = "qwen3moe"
     elif model_type == "gemma3_text":
         model_type = "gemma3"
     arch = None
@@ -391,6 +419,8 @@ def load_gguf_checkpoint(gguf_checkpoint_path, return_tensors=False, model_to_lo
 
     if "qwen2moe" in architecture:
         updated_architecture = "qwen2_moe"
+    elif "qwen3moe" in architecture:
+        updated_architecture = "qwen3_moe"
 
     # For stablelm architecture, we need to set qkv_bias and use_parallel_residual from tensors
     # If `qkv_bias=True`, qkv_proj with bias will be present in the tensors
